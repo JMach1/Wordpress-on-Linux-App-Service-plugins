@@ -1,0 +1,22 @@
+name: App Service Email Folder to Zip
+
+on:
+  push:
+    branches:
+      - main 
+
+jobs:
+  convert-folder:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Install zip utility
+      run: sudo apt-get -y install zip
+
+    - name: Convert Folder to Zip
+      run: |
+        # Replace "app_service_email" with the name of the folder you want to convert to zip
+        zip -r app_service_email.zip app_service_email
