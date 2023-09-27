@@ -148,6 +148,11 @@ class Azure_app_service_email_controller
             return false;
         }
 
+        if (substr($acsurl, -1) === '/') {
+            // Remove the trailing slash
+            $acsurl = rtrim($acsurl, '/');
+        }
+        
         $acshost = str_replace('https://', '', $acsurl);
         $pathWithQuery = '/emails:send?api-version=2023-01-15-preview';
         $requestBody = $this->generate_request_body($to, $subject, $message, $senderaddress);
