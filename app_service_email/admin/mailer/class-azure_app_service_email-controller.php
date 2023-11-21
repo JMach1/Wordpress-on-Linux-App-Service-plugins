@@ -71,27 +71,66 @@ class Azure_app_service_email_controller
         $to = isset($args['to']) ? $args['to'] : '';
         $subject = isset($args['subject']) ? $args['subject'] : '';
         $message = isset($args['message']) ? $args['message'] : '';
+        $emailHeaders = isset($args['headers']) ? $args['headers'] : '';
 
         do {
-            $result = $this->acs_send_email($to, $subject, $message);
+            $result = $this->acs_send_email($to, $subject, $message, $emailHeaders);
             $retryCount++;
         } while (!$result && $retryCount < $maxRetries);
 
         return $result;
     }
 
-    public function generate_request_body($to, $subject, $message, $senderaddress)
+    public function generate_request_body($to, $subject, $message, $senderaddress, $emailHeaders)
     {
+        $content_type = '';
+        $reply_to = $cc = $bcc = [];
+        $this->processHeaders($emailHeaders, $content_type, $reply_to, $cc, $bcc);
+
+        if (!is_array($to)) {
+            $to = explode(',', $to);
+        }
+        if (empty($content_type) || !isset($content_type)) {
+            $content_type = (strpos($message, '<html') !== false || strpos($message, '<!DOCTYPE') !== false)
+                ? 'text/html'
+                : 'text/plain';
+        } else {
+            $content_type = (substr($content_type, 0, 10) == 'text/plain') ? 'text/plain' : 'text/html';
+        }
+
+        $toObjects = [];
+        foreach ($to as $address) {
+            $toObjects[] = ['address' => $address];
+        }
+
+        $replyToObjects = [];
+        foreach ($reply_to as $address) {
+            $replyToObjects[] = ['address' => $address];
+        }
+
+        $ccObjects = [];
+        foreach ($cc as $address) {
+            $ccObjects[] = ['address' => $address];
+        }
+
+        $bccObjects = [];
+        foreach ($bcc as $address) {
+            $bccObjects[] = ['address' => $address];
+        }
+
         return json_encode([
             'senderAddress' => $senderaddress,
             'content' => [
                 'subject' => $subject,
                 'plainText' => $message,
-                'html' => nl2br($message)
+                'html' => ($content_type == 'text/html') ? $message : null
             ],
             'recipients' => [
-                'to' => array(array('address' => $to))
-            ]
+                'to' => $toObjects,
+                'cc' => $ccObjects,
+                'bcc' => $bccObjects
+            ],
+            'replyTo' => $replyToObjects
         ]);
     }
 
@@ -121,7 +160,7 @@ class Azure_app_service_email_controller
         return base64_encode(hash_hmac('sha256', $stringToSign, $key, true));
     }
 
-    public function acs_send_email($to, $subject, $message)
+    public function acs_send_email($to, $subject, $message, $emailHeaders)
     {
         require_once plugin_dir_path(dirname(__FILE__)) . '../admin/logger/class-azure_app_service_email-logger.php';
         $logemail = new Azure_app_service_email_logger();
@@ -152,10 +191,10 @@ class Azure_app_service_email_controller
             // Remove the trailing slash
             $acsurl = rtrim($acsurl, '/');
         }
-        
+
         $acshost = str_replace('https://', '', $acsurl);
         $pathWithQuery = '/emails:send?api-version=2023-01-15-preview';
-        $requestBody = $this->generate_request_body($to, $subject, $message, $senderaddress);
+        $requestBody = $this->generate_request_body($to, $subject, $message, $senderaddress, $emailHeaders);
         $hashedBodyStr = base64_encode(hash('sha256', $requestBody, true));
         $requestMethod = 'POST';
         $dateStr = gmdate('D, d M Y H:i:s \G\M\T');
@@ -192,6 +231,70 @@ class Azure_app_service_email_controller
             do_action('wp_mail_failed', new WP_Error('acs_mail_failed', 'An Error Occured: ' . $message));
             $logemail->email_logger_capture_emails($to, $subject, 'Failure', 'An Error Occured: ' . $message);
             return false;
+        }
+    }
+
+    public function processHeaders($emailHeaders, &$content_type, &$reply_to, &$cc, &$bcc)
+    {
+        if (empty($emailHeaders)) {
+            $emailHeaders = array();
+        } else {
+
+            if (!is_array($emailHeaders)) {
+                /*
+                 * Explode the headers out, so this function can take
+                 * both string headers and an array of headers.
+                 */
+                $tempheaders = explode("\n", str_replace("\r\n", "\n", $emailHeaders));
+            } else {
+                $tempheaders = $emailHeaders;
+            }
+            $emailHeaders = array();
+
+            // If it's actually got contents.
+            if (!empty($tempheaders)) {
+                // Iterate through the raw headers.
+                foreach ((array) $tempheaders as $header) {
+                    if (!str_contains($header, ':')) {
+                        continue;
+                    }
+                    // Explode them out.
+                    list($name, $content) = explode(':', trim($header), 2);
+
+                    // Cleanup crew.
+                    $name    = trim($name);
+                    $content = trim($content);
+                    switch (strtolower($name)) {
+                            // Mainly for legacy -- process a "From:" header if it's there.
+                        case 'content-type':
+                            $this->processContentTypeHeader($content, $content_type);
+                            break;
+                        case 'reply-to':
+                            $reply_to = array_merge((array) $reply_to, explode(',', $content));
+                            break;
+                        case 'cc':
+                            $cc = array_merge((array) $cc, explode(',', $content));
+                            break;
+                        case 'bcc':
+                            $bcc = array_merge((array) $bcc, explode(',', $content));
+                            break;
+                        default:
+                            // Add it to our grand headers array.
+                            $headers[trim($name)] = trim($content);
+                            break;
+                    }
+                }
+            }
+        }
+    }
+
+    private function processContentTypeHeader($content, &$content_type)
+    {
+        if (str_contains($content, ';')) {
+            list($type,) = explode(';', $content);
+            $content_type = trim($type);
+        } elseif ('' !== trim($content)) {
+            $content_type = trim($content);
         }
     }
 }
